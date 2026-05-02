@@ -1,0 +1,35 @@
+[gd_scene format=3 uid="uid://dw1s7wwfgsrhm"]
+
+[ext_resource type="Texture2D" uid="uid://crorx3f7cltih" path="res://local_ui_assets/ui_panel_outer_9slice.png" id="1_panel"]
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_outer"]
+content_margin_left = 16.0
+content_margin_top = 16.0
+content_margin_right = 16.0
+content_margin_bottom = 16.0
+texture = ExtResource("1_panel")
+texture_margin_left = 24.0
+texture_margin_top = 24.0
+texture_margin_right = 24.0
+texture_margin_bottom = 24.0
+region_rect = Rect2(48, 68, 1420, 856)
+
+[node name="DetailPanel" type="PanelContainer" unique_id=206313294]
+custom_minimum_size = Vector2(340, 0)
+offset_right = 386.0
+offset_bottom = 346.0
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("StyleBoxTexture_outer")
+
+[node name="DetailMargin" type="MarginContainer" parent="." unique_id=1716763142]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 14
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 14
+
+[node name="DetailContent" type="VBoxContainer" parent="DetailMargin" unique_id=37449734]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 10

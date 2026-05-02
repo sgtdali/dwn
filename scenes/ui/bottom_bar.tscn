@@ -1,0 +1,32 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Texture2D" path="res://local_ui_assets/ui_panel_outer_9slice.png" id="1_panel"]
+[ext_resource type="PackedScene" path="res://scenes/ui/bottom_nav.tscn" id="2_bottom_nav"]
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_outer"]
+content_margin_left = 16.0
+content_margin_top = 16.0
+content_margin_right = 16.0
+content_margin_bottom = 16.0
+texture = ExtResource("1_panel")
+texture_margin_left = 24.0
+texture_margin_top = 24.0
+texture_margin_right = 24.0
+texture_margin_bottom = 24.0
+region_rect = Rect2(48, 68, 1420, 856)
+
+[node name="BottomPanel" type="PanelContainer"]
+custom_minimum_size = Vector2(0, 122)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBoxTexture_outer")
+
+[node name="BottomMargin" type="MarginContainer" parent="."]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 14
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 14
+
+[node name="BottomNav" parent="BottomMargin" instance=ExtResource("2_bottom_nav")]
+layout_mode = 2

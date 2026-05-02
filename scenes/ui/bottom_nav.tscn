@@ -1,0 +1,50 @@
+[gd_scene format=3]
+
+[node name="BottomNav" type="HFlowContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
+
+[node name="BuildButton" type="Button" parent="."]
+custom_minimum_size = Vector2(100, 56)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+text = "BUILD"
+
+[node name="CitizensButton" type="Button" parent="."]
+custom_minimum_size = Vector2(100, 56)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+text = "CITIZENS"
+
+[node name="ProductionButton" type="Button" parent="."]
+custom_minimum_size = Vector2(100, 56)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+text = "PRODUCTION"
+
+[node name="StorageButton" type="Button" parent="."]
+custom_minimum_size = Vector2(100, 56)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+text = "STORAGE"
+
+[node name="EventsButton" type="Button" parent="."]
+custom_minimum_size = Vector2(100, 56)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+text = "EVENTS"
+
+[node name="ManagementButton" type="Button" parent="."]
+custom_minimum_size = Vector2(100, 56)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+text = "MANAGEMENT"

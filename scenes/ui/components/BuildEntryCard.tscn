@@ -1,0 +1,89 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/components/build_entry_card.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://local_ui_assets/ui_panel_inner_9slice.png" id="2_panel"]
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_inner"]
+content_margin_left = 10.0
+content_margin_top = 10.0
+content_margin_right = 10.0
+content_margin_bottom = 10.0
+texture = ExtResource("2_panel")
+texture_margin_left = 12.0
+texture_margin_top = 12.0
+texture_margin_right = 12.0
+texture_margin_bottom = 12.0
+
+[node name="BuildEntryCard" type="PanelContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBoxTexture_inner")
+script = ExtResource("1_script")
+
+[node name="Margin" type="MarginContainer" parent="."]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="Box" type="VBoxContainer" parent="Margin"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 5
+
+[node name="Header" type="HBoxContainer" parent="Margin/Box"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="NameLabel" type="Label" parent="Margin/Box/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 15
+text = "Wood Camp"
+
+[node name="QuantityLabel" type="Label" parent="Margin/Box/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+horizontal_alignment = 2
+text = "x1"
+
+[node name="DescriptionLabel" type="Label" parent="Margin/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 2
+text = "Produces wood."
+
+[node name="RoleLabel" type="Label" parent="Margin/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Role: Workers 2"
+
+[node name="OutputLabel" type="Label" parent="Margin/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Output: Wood"
+
+[node name="CostLabel" type="Label" parent="Margin/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Cost: Wood 10"
+
+[node name="StatusLabel" type="Label" parent="Margin/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Ready"
+
+[node name="SelectButton" type="Button" parent="Margin/Box"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 34)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Select"
