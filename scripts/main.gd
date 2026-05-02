@@ -1,16 +1,36 @@
 extends Control
 
 const GameStateScript := preload("res://scripts/game_state.gd")
+const BuildCatalogScript := preload("res://scripts/ui/build_catalog.gd")
+const BuildPlacementStateScript := preload("res://scripts/ui/build_placement_state.gd")
+const PlacedBuildingPresenterScript := preload("res://scripts/ui/placed_building_presenter.gd")
+const WorkforcePresenterScript := preload("res://scripts/ui/workforce_presenter.gd")
+const CitizenPresenterScript := preload("res://scripts/ui/citizen_presenter.gd")
+const ProductionPresenterScript := preload("res://scripts/ui/production_presenter.gd")
+const StoragePresenterScript := preload("res://scripts/ui/storage_presenter.gd")
+const EventsPresenterScript := preload("res://scripts/ui/events_presenter.gd")
+const ManagementPresenterScript := preload("res://scripts/ui/management_presenter.gd")
 
 const TOP_BAR_HEIGHT := 112
 const BOTTOM_BAR_HEIGHT := 110
 const RIGHT_PANEL_WIDTH := 300
+const PLACEMENT_GRID_COLUMNS := 8
+const PLACEMENT_GRID_ROWS := 5
 
 var game: GameState
 var tick_accumulator: float = 0.0
 var time_scale: int = 1
 var selected_section: String = "Build"
+var selected_build_id: String = ""
+var selected_placed_cell := Vector2i(-1, -1)
 var details_collapsed: bool = false
+var placement_state: BuildPlacementState
+var selected_citizen_id: int = -1
+var citizens_filter: String = "All"
+var selected_production_id: String = ""
+var production_filter: String = "All"
+var selected_resource_id: String = ""
+var storage_filter: String = "All"
 
 var color_bg := Color(0.12, 0.13, 0.11)
 var color_panel := Color(0.18, 0.17, 0.14)
@@ -22,7 +42,7 @@ var color_accent := Color(0.74, 0.56, 0.28)
 
 var root_margin: MarginContainer
 var main_vbox: VBoxContainer
-var resource_row: HFlowContainer
+var resource_row: HBoxContainer
 var body_row: HBoxContainer
 var map_panel: PanelContainer
 var map_content: VBoxContainer
@@ -37,6 +57,7 @@ func _ready() -> void:
 	game = GameStateScript.new()
 	add_child(game)
 	game.changed.connect(_refresh)
+	placement_state = BuildPlacementStateScript.new()
 
 	_build_layout()
 	game.load_game()
@@ -95,11 +116,10 @@ func _build_top_resource_bar() -> void:
 	margin.add_theme_constant_override("margin_bottom", 10)
 	top_panel.add_child(margin)
 
-	resource_row = HFlowContainer.new()
+	resource_row = HBoxContainer.new()
 	resource_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	resource_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	resource_row.add_theme_constant_override("h_separation", 8)
-	resource_row.add_theme_constant_override("v_separation", 8)
+	resource_row.add_theme_constant_override("separation", 10)
 	margin.add_child(resource_row)
 
 
@@ -185,16 +205,50 @@ func _refresh() -> void:
 
 func _draw_top_bar() -> void:
 	_clear(resource_row)
+	var workforce := WorkforcePresenterScript.summary(game)
 
-	_add_resource_chip("Wood", str(game.industry_resources.get("Wood", 0)))
-	_add_resource_chip("Stone", str(game.industry_resources.get("stone", 0)))
-	_add_resource_chip("Food", str(game.total_food()))
-	_add_resource_chip("Coal", str(game.industry_resources.get("coal", 0)))
-	_add_resource_chip("Population", "%s/%s" % [game.citizens.size(), _citizen_capacity()])
-	_add_resource_chip("Free Workers", str(game.free_citizens()))
+	# Resources group
+	var res_box := HBoxContainer.new()
+	res_box.add_theme_constant_override("separation", 6)
+	res_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	resource_row.add_child(res_box)
+	_add_top_chip(res_box, "Wood", str(game.industry_resources.get("Wood", 0)), color_text)
+	_add_top_chip(res_box, "Stone", str(game.industry_resources.get("stone", 0)), color_text)
+	_add_top_chip(res_box, "Coal", str(game.industry_resources.get("coal", 0)), color_text)
+	_add_top_chip(res_box, "Food", str(game.total_food()), color_text)
 
-	_add_date_chip()
-	_add_time_controls()
+	resource_row.add_child(_top_vsep())
+
+	# Workforce group
+	var wf_box := HBoxContainer.new()
+	wf_box.add_theme_constant_override("separation", 6)
+	wf_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	resource_row.add_child(wf_box)
+	var free_c := _citizen_status_color("Free") if int(workforce.free) > 0 else color_muted
+	var work_c := _citizen_status_color("Working") if int(workforce.assigned_workers) > 0 else color_muted
+	var build_c := _citizen_status_color("Building") if int(workforce.builders) > 0 else color_muted
+	_add_top_chip(wf_box, "Pop", "%s/%s" % [int(workforce.total), _citizen_capacity()], color_text)
+	_add_top_chip(wf_box, "Free", str(int(workforce.free)), free_c)
+	_add_top_chip(wf_box, "Assigned", str(int(workforce.assigned_workers)), work_c)
+	_add_top_chip(wf_box, "Builders", str(int(workforce.builders)), build_c)
+
+	resource_row.add_child(_top_vsep())
+
+	# Date + Time group
+	var dt_box := HBoxContainer.new()
+	dt_box.add_theme_constant_override("separation", 8)
+	dt_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	resource_row.add_child(dt_box)
+	_add_date_block(dt_box)
+	_add_time_controls(dt_box)
+
+	# Spacer pushes warnings to the right
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	resource_row.add_child(spacer)
+
+	# Global warnings
+	_add_top_warnings()
 
 
 func _draw_map_placeholder() -> void:
@@ -208,14 +262,17 @@ func _draw_map_placeholder() -> void:
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 
-	var mode := _label(selected_section, 14, color_muted)
+	var mode_text := "Placement Mode" if _is_placing_build() else selected_section
+	var mode := _label(mode_text, 14, color_accent if _is_placing_build() else color_muted)
 	mode.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	header.add_child(mode)
 
 	var play_area := PanelContainer.new()
 	play_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	play_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_style_panel(play_area, Color(0.13, 0.16, 0.13), Color(0.27, 0.30, 0.23), 1)
+	var play_fill := Color(0.17, 0.16, 0.12) if _is_placing_build() else Color(0.13, 0.16, 0.13)
+	var play_border := color_accent if _is_placing_build() else Color(0.27, 0.30, 0.23)
+	_style_panel(play_area, play_fill, play_border, 1)
 	map_content.add_child(play_area)
 
 	var play_margin := MarginContainer.new()
@@ -229,16 +286,140 @@ func _draw_map_placeholder() -> void:
 	placeholder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	placeholder.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	placeholder.alignment = BoxContainer.ALIGNMENT_CENTER
-	placeholder.add_theme_constant_override("separation", 8)
+	placeholder.add_theme_constant_override("separation", 10)
 	play_margin.add_child(placeholder)
 
-	var label := _label("Main Settlement / Map Area", 22, color_text)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	placeholder.add_child(label)
+	if _is_placing_build():
+		_draw_placement_preview(placeholder)
+	else:
+		var label := _label("Settlement Board", 22, color_text)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		placeholder.add_child(label)
 
-	var sublabel := _label("Reserved for buildings, terrain, roads, selection, and overlays.", 14, color_muted)
-	sublabel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	placeholder.add_child(sublabel)
+		var sublabel := _label("Placed buildings and future town layout.", 14, color_muted)
+		sublabel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		placeholder.add_child(sublabel)
+		_draw_placement_grid(placeholder)
+
+
+func _draw_placement_preview(parent: VBoxContainer) -> void:
+	var instruction := _label("Select Location", 16, color_accent)
+	instruction.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	parent.add_child(instruction)
+
+	var selected := _label(placement_state.selected_name(), 24, color_text)
+	selected.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	parent.add_child(selected)
+
+	var state_label := _label(_placement_status_text(), 14, color_accent if placement_state.has_valid_target() else color_muted)
+	state_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	parent.add_child(state_label)
+
+	_draw_placement_grid(parent)
+
+	var controls := HBoxContainer.new()
+	controls.alignment = BoxContainer.ALIGNMENT_CENTER
+	controls.add_theme_constant_override("separation", 10)
+	parent.add_child(controls)
+
+	var confirm := Button.new()
+	confirm.text = "Confirm Placement"
+	confirm.custom_minimum_size = Vector2(160, 42)
+	confirm.pressed.connect(_confirm_build_placement)
+	_style_button(confirm, placement_state.has_valid_target())
+	controls.add_child(confirm)
+
+	var cancel := Button.new()
+	cancel.text = "Cancel"
+	cancel.custom_minimum_size = Vector2(110, 42)
+	cancel.pressed.connect(_cancel_build_placement)
+	_style_button(cancel, false)
+	controls.add_child(cancel)
+
+	var message := _label(placement_state.message, 13, color_muted)
+	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	parent.add_child(message)
+
+
+func _draw_placement_grid(parent: VBoxContainer) -> void:
+	var grid_shell := PanelContainer.new()
+	grid_shell.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_style_panel(grid_shell, Color(0.10, 0.12, 0.10), Color(0.30, 0.28, 0.20), 1)
+	parent.add_child(grid_shell)
+
+	var grid_margin := MarginContainer.new()
+	grid_margin.add_theme_constant_override("margin_left", 10)
+	grid_margin.add_theme_constant_override("margin_top", 10)
+	grid_margin.add_theme_constant_override("margin_right", 10)
+	grid_margin.add_theme_constant_override("margin_bottom", 10)
+	grid_shell.add_child(grid_margin)
+
+	var grid := GridContainer.new()
+	grid.columns = PLACEMENT_GRID_COLUMNS
+	grid.add_theme_constant_override("h_separation", 6)
+	grid.add_theme_constant_override("v_separation", 6)
+	grid_margin.add_child(grid)
+
+	for y in range(PLACEMENT_GRID_ROWS):
+		for x in range(PLACEMENT_GRID_COLUMNS):
+			_add_placement_cell_button(grid, x, y)
+
+
+func _add_placement_cell_button(parent: GridContainer, x: int, y: int) -> void:
+	var placement := game.placement_at(x, y)
+	var occupied := not placement.is_empty()
+	var cell := Vector2i(x, y)
+	var selected := placement_state.target_cell == cell if _is_placing_build() else selected_placed_cell == cell
+	var valid := not occupied
+
+	var button := Button.new()
+	button.custom_minimum_size = Vector2(92, 58)
+	button.text = _placement_cell_text(x, y, placement, selected)
+	if _is_placing_build():
+		button.mouse_entered.connect(_target_placement_cell.bind(x, y))
+	button.pressed.connect(_click_grid_cell.bind(x, y))
+	_style_placement_cell(button, valid, selected, placement)
+	_add_staffing_indicator(button, placement)
+	parent.add_child(button)
+
+
+func _placement_cell_text(x: int, y: int, placement: Dictionary, selected: bool) -> String:
+	var occupied := not placement.is_empty()
+	if not occupied:
+		return "Place" if (selected and _is_placing_build()) else ""
+	var tile := PlacedBuildingPresenterScript.tile(game, placement)
+	if selected and _is_placing_build():
+		return "%s\nBlocked" % str(tile.name)
+	if bool(tile.under_construction):
+		return "%s\n%s" % [str(tile.name), str(tile.progress_text)]
+	return str(tile.name)
+
+
+func _click_grid_cell(x: int, y: int) -> void:
+	if _is_placing_build():
+		_target_placement_cell(x, y)
+		if not game.placement_at(x, y).is_empty():
+			selected_placed_cell = Vector2i(x, y)
+		return
+
+	if not game.placement_at(x, y).is_empty():
+		selected_placed_cell = Vector2i(x, y)
+		_refresh()
+
+
+func _target_placement_cell(x: int, y: int) -> void:
+	if not _is_placing_build():
+		return
+	placement_state.target(x, y, game.can_place_building(x, y))
+	_refresh()
+
+
+func _placement_status_text() -> String:
+	if placement_state.has_valid_target():
+		return "Valid cell selected - ready to confirm."
+	if placement_state.target_cell.x >= 0:
+		return "Selected cell is occupied."
+	return "Choose an empty cell."
 
 
 func _draw_detail_panel() -> void:
@@ -248,7 +429,8 @@ func _draw_detail_panel() -> void:
 	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	detail_content.add_child(header)
 
-	var title := _label("Selected Object", 18, color_text)
+	var panel_title := selected_section
+	var title := _label(panel_title, 18, color_text)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 
@@ -263,7 +445,34 @@ func _draw_detail_panel() -> void:
 		detail_panel.custom_minimum_size.x = 62
 		return
 
-	detail_panel.custom_minimum_size.x = RIGHT_PANEL_WIDTH
+	detail_panel.custom_minimum_size.x = RIGHT_PANEL_WIDTH + (40 if selected_section in ["Build", "Citizens", "Production", "Storage"] else 0)
+
+	if selected_section == "Build":
+		if _has_selected_placed_building() and not _is_placing_build():
+			_draw_placed_building_detail()
+			return
+		_draw_build_panel()
+		return
+
+	if selected_section == "Citizens":
+		_draw_citizens_panel()
+		return
+
+	if selected_section == "Production":
+		_draw_production_panel()
+		return
+
+	if selected_section == "Storage":
+		_draw_storage_panel()
+		return
+
+	if selected_section == "Events":
+		_draw_events_panel()
+		return
+
+	if selected_section == "Management":
+		_draw_management_panel()
+		return
 
 	_add_detail_row("Status", "Idle")
 	_add_detail_row("Workers", "0 / 0")
@@ -292,6 +501,1446 @@ func _draw_detail_panel() -> void:
 	detail_content.add_child(filler)
 
 
+func _draw_build_panel() -> void:
+	var entries: Array = BuildCatalogScript.entries(game)
+	if entries.is_empty():
+		detail_content.add_child(_label("No buildable entries found.", 13, color_muted))
+		return
+
+	if selected_build_id.is_empty():
+		selected_build_id = str(entries[0].id)
+
+	var intro_text := "Choose a building to prepare placement."
+	if _is_placing_build():
+		intro_text = "Placement preparation active. Confirm or cancel when ready."
+	var intro := _label(intro_text, 12, color_muted)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_content.add_child(intro)
+
+	var selected_entry := _find_build_entry(entries, selected_build_id)
+	_draw_selected_build_summary(selected_entry)
+
+	var list_title := _label("Buildable", 14, color_accent)
+	detail_content.add_child(list_title)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	detail_content.add_child(scroll)
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 8)
+	scroll.add_child(list)
+
+	var last_category := ""
+	for entry in entries:
+		var category := str(entry.category_label)
+		if category != last_category:
+			var category_label := _label(category, 13, color_accent)
+			category_label.custom_minimum_size.y = 26
+			list.add_child(category_label)
+			last_category = category
+		_add_build_entry_card(list, entry)
+
+
+func _draw_placed_building_detail() -> void:
+	var placement := game.placement_at(selected_placed_cell.x, selected_placed_cell.y)
+	if placement.is_empty():
+		selected_placed_cell = Vector2i(-1, -1)
+		_draw_build_panel()
+		return
+
+	var tile := PlacedBuildingPresenterScript.tile(game, placement)
+	var position: Vector2i = tile.position
+	var title := _label(str(tile.full_name), 17, color_text)
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_content.add_child(title)
+
+	var state_color := color_accent if bool(tile.under_construction) else color_text
+	_add_detail_row("Category", str(tile.category))
+	_add_detail_row("Position", "%s, %s" % [position.x, position.y])
+	_add_detail_row("State", str(tile.state), state_color)
+	_add_detail_row("Construction", "Yes" if bool(tile.under_construction) else "No")
+	_draw_construction_progress_detail(tile)
+	_draw_builder_controls(tile)
+	_add_detail_row("Workers", _worker_detail_text(tile))
+	_add_detail_row("Output", str(tile.output))
+
+	var separator := HSeparator.new()
+	detail_content.add_child(separator)
+
+	var actions_title := _label("Actions", 14, color_accent)
+	detail_content.add_child(actions_title)
+
+	var actions := VBoxContainer.new()
+	actions.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_theme_constant_override("separation", 8)
+	detail_content.add_child(actions)
+
+	if bool(tile.has_workers):
+		_add_sidebar_action(actions, "Assign Worker", _assign_selected_building_worker, bool(tile.can_assign_worker), true)
+		_add_sidebar_action(actions, "Remove Worker", _remove_selected_building_worker, bool(tile.can_remove_worker))
+
+		var hint := _label(_worker_action_hint(tile), 12, color_muted)
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		detail_content.add_child(hint)
+	else:
+		var no_workers := _label("This building type does not use assignable workers yet.", 12, color_muted)
+		no_workers.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		detail_content.add_child(no_workers)
+
+	_add_sidebar_action(actions, "Demolish", _demolish_selected_building, true)
+
+	var back := Button.new()
+	back.text = "Back To Build Menu"
+	back.custom_minimum_size.y = 38
+	back.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	back.pressed.connect(_clear_placed_building_selection)
+	_style_button(back, false)
+	detail_content.add_child(back)
+
+
+func _draw_construction_progress_detail(tile: Dictionary) -> void:
+	if not bool(tile.under_construction):
+		var ready := _label("Construction complete. Building is ready.", 12, color_muted)
+		ready.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		detail_content.add_child(ready)
+		return
+
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(panel, Color(0.24, 0.20, 0.13), color_accent, 1)
+	detail_content.add_child(panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 10)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_right", 10)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	panel.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	margin.add_child(box)
+
+	var title := _label("Construction in progress", 13, color_accent)
+	box.add_child(title)
+
+	var bar := ProgressBar.new()
+	bar.min_value = 0
+	bar.max_value = int(tile.progress_max)
+	bar.value = int(tile.progress)
+	bar.custom_minimum_size.y = 16
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.show_percentage = false
+	box.add_child(bar)
+
+	var progress := _label("%s / %s  (%s)" % [int(tile.progress), int(tile.progress_max), str(tile.progress_text)], 12, color_text)
+	progress.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(progress)
+
+
+func _draw_builder_controls(tile: Dictionary) -> void:
+	if not bool(tile.under_construction):
+		return
+
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(panel, Color(0.19, 0.18, 0.14), Color(0.38, 0.34, 0.25), 1)
+	detail_content.add_child(panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 10)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_right", 10)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	panel.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 7)
+	margin.add_child(box)
+
+	box.add_child(_label("Construction Crew", 14, color_accent))
+	box.add_child(_label("Builders assigned: %s" % int(tile.builders), 12, color_text))
+	box.add_child(_label(WorkforcePresenterScript.free_text(game), 12, color_muted))
+	var status := _label(str(tile.construction_status), 12, color_accent if int(tile.builders) > 0 else color_muted)
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(status)
+
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 8)
+	box.add_child(actions)
+
+	_add_sidebar_action(actions, "Assign Builder", _assign_selected_building_builder, bool(tile.can_assign_builder), true)
+	_add_sidebar_action(actions, "Remove Builder", _remove_selected_building_builder, bool(tile.can_remove_builder))
+
+
+func _draw_selected_build_summary(entry: Dictionary) -> void:
+	var summary := PanelContainer.new()
+	summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(summary, Color(0.25, 0.21, 0.14), color_accent, 1)
+	detail_content.add_child(summary)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 10)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_right", 10)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	summary.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	margin.add_child(box)
+
+	box.add_child(_label(str(entry.name), 16, color_text))
+	var status_text := "Selected - %s" % str(entry.status)
+	if _is_placing_build() and placement_state.has_valid_target():
+		status_text = "Selected - target cell ready"
+	elif _is_placing_build():
+		status_text = "Selected - choose an empty cell"
+	var status := _label(status_text, 12, color_accent)
+	box.add_child(status)
+	box.add_child(_label("Role: %s" % str(entry.capacity), 12, color_muted))
+	box.add_child(_label("Output: %s" % str(entry.output), 12, color_muted))
+	box.add_child(_label("Build cost: %s" % str(entry.cost), 12, color_muted))
+	if placement_state != null and placement_state.message != "":
+		box.add_child(_label(placement_state.message, 12, color_accent if _is_placing_build() else color_muted))
+
+	var action := Button.new()
+	action.text = "Confirm Placement" if _is_placing_build() else "Ready To Place"
+	action.custom_minimum_size.y = 36
+	action.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if _is_placing_build():
+		action.pressed.connect(_confirm_build_placement)
+	else:
+		action.pressed.connect(_prepare_selected_build_placement)
+	_style_button(action, true)
+	box.add_child(action)
+
+	if _is_placing_build():
+		var cancel := Button.new()
+		cancel.text = "Cancel Placement"
+		cancel.custom_minimum_size.y = 34
+		cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		cancel.pressed.connect(_cancel_build_placement)
+		_style_button(cancel, false)
+		box.add_child(cancel)
+
+
+func _add_build_entry_card(parent: VBoxContainer, entry: Dictionary) -> void:
+	var selected := str(entry.id) == selected_build_id
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(card, Color(0.24, 0.21, 0.16) if selected else color_panel_soft, color_accent if selected else Color(0.30, 0.27, 0.20), 1)
+	parent.add_child(card)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 10)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_right", 10)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	card.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 5)
+	margin.add_child(box)
+
+	var header := HBoxContainer.new()
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(header)
+
+	var name := _label(str(entry.name), 15, color_text)
+	name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(name)
+
+	var quantity := _label("x%s" % int(entry.quantity), 12, color_muted)
+	quantity.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	header.add_child(quantity)
+
+	var description := _label(str(entry.description), 12, color_muted)
+	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(description)
+
+	box.add_child(_label("Role: %s" % str(entry.capacity), 12, color_muted))
+	box.add_child(_label("Output: %s" % str(entry.output), 12, color_muted))
+	box.add_child(_label("Cost: %s" % str(entry.cost), 12, color_muted))
+	box.add_child(_label(str(entry.status), 12, color_accent if selected else color_muted))
+
+	var select_button := Button.new()
+	select_button.text = "Selected" if selected else "Select"
+	select_button.custom_minimum_size.y = 34
+	select_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	select_button.pressed.connect(_select_build_entry.bind(str(entry.id)))
+	_style_button(select_button, selected)
+	box.add_child(select_button)
+
+
+func _draw_citizens_panel() -> void:
+	var workforce := WorkforcePresenterScript.summary(game)
+	var all_presented: Array = CitizenPresenterScript.present_all(game)
+
+	# Workforce stat chips
+	var stat_row := HBoxContainer.new()
+	stat_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	stat_row.add_theme_constant_override("separation", 6)
+	detail_content.add_child(stat_row)
+	_make_citizen_stat_chip(stat_row, "Total", str(int(workforce.total)), color_text)
+	_make_citizen_stat_chip(stat_row, "Free", str(int(workforce.free)), _citizen_status_color("Free"))
+	_make_citizen_stat_chip(stat_row, "Working", str(int(workforce.assigned_workers)), _citizen_status_color("Working"))
+	_make_citizen_stat_chip(stat_row, "Building", str(int(workforce.builders)), _citizen_status_color("Building"))
+
+	# Filter chips
+	var filter_row := HBoxContainer.new()
+	filter_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filter_row.add_theme_constant_override("separation", 6)
+	detail_content.add_child(filter_row)
+	for f in ["All", "Free", "Working", "Building"]:
+		var chip := Button.new()
+		chip.text = f
+		chip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		chip.custom_minimum_size.y = 30
+		chip.pressed.connect(_set_citizens_filter.bind(f))
+		_style_button(chip, citizens_filter == f)
+		filter_row.add_child(chip)
+
+	# Roster label
+	detail_content.add_child(_label("Roster", 13, color_muted))
+
+	# Scrollable citizen list
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	detail_content.add_child(scroll)
+
+	var roster := VBoxContainer.new()
+	roster.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	roster.add_theme_constant_override("separation", 6)
+	scroll.add_child(roster)
+
+	var shown := 0
+	for presented in all_presented:
+		if citizens_filter != "All" and str(presented.status) != citizens_filter:
+			continue
+		shown += 1
+		_draw_citizen_row(roster, presented)
+
+	if shown == 0:
+		var empty := _label("No citizens match this filter.", 12, color_muted)
+		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		roster.add_child(empty)
+
+	# Separator + selected detail
+	detail_content.add_child(HSeparator.new())
+
+	var selected_data: Dictionary = {}
+	for p in all_presented:
+		if int(p.id) == selected_citizen_id:
+			selected_data = p
+			break
+
+	if selected_data.is_empty():
+		var hint := _label("Select a citizen to see details.", 12, color_muted)
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		detail_content.add_child(hint)
+	else:
+		_draw_citizen_detail_panel(selected_data)
+
+
+func _draw_citizen_row(parent: VBoxContainer, presented: Dictionary) -> void:
+	var cid := int(presented.id)
+	var selected := cid == selected_citizen_id
+
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
+	card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_style_panel(card,
+		Color(0.26, 0.23, 0.16) if selected else color_panel_soft,
+		color_accent if selected else Color(0.30, 0.27, 0.20),
+		1)
+	card.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			_select_citizen(cid)
+	)
+	parent.add_child(card)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 10)
+	cm.add_theme_constant_override("margin_top", 7)
+	cm.add_theme_constant_override("margin_right", 10)
+	cm.add_theme_constant_override("margin_bottom", 7)
+	card.add_child(cm)
+
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 3)
+	cm.add_child(box)
+
+	var name_row := HBoxContainer.new()
+	name_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(name_row)
+
+	var name_lbl := _label(str(presented.name), 14, color_text)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_row.add_child(name_lbl)
+
+	var status_lbl := _label(str(presented.status), 12, _citizen_status_color(str(presented.status)))
+	status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	name_row.add_child(status_lbl)
+
+	var info_row := HBoxContainer.new()
+	info_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_row.add_theme_constant_override("separation", 8)
+	box.add_child(info_row)
+
+	var wa_lbl := _label(str(presented.workarea_label), 11, color_muted)
+	wa_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_row.add_child(wa_lbl)
+
+	var stats_lbl := _label("HP:%s  Joy:%s  Age:%s" % [int(presented.health), int(presented.happiness), int(presented.age)], 11, color_muted)
+	stats_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	info_row.add_child(stats_lbl)
+
+
+func _draw_citizen_detail_panel(presented: Dictionary) -> void:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(panel, Color(0.22, 0.20, 0.15), color_accent, 1)
+	detail_content.add_child(panel)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 12)
+	cm.add_theme_constant_override("margin_top", 10)
+	cm.add_theme_constant_override("margin_right", 12)
+	cm.add_theme_constant_override("margin_bottom", 10)
+	panel.add_child(cm)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 5)
+	cm.add_child(box)
+
+	var header_row := HBoxContainer.new()
+	header_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(header_row)
+
+	var name_lbl := _label(str(presented.name), 15, color_text)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(name_lbl)
+
+	var status_lbl := _label(str(presented.status), 13, _citizen_status_color(str(presented.status)))
+	header_row.add_child(status_lbl)
+
+	var wa_lbl := _label(str(presented.workarea_label), 12, color_muted)
+	wa_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(wa_lbl)
+
+	box.add_child(HSeparator.new())
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 4)
+	box.add_child(grid)
+
+	var hunger_text := "Hungry" if presented.get("hunger", false) else "Sated"
+	var shelter_text := "Yes" if presented.get("shelter", false) else "No"
+	for row in [
+		["Health", "%s / 100" % int(presented.health)],
+		["Happiness", "%s / 100" % int(presented.happiness)],
+		["Age", "%s years" % int(presented.age)],
+		["Efficiency", "%s%%" % int(presented.efficiency)],
+		["Hunger", hunger_text],
+		["Shelter", shelter_text],
+	]:
+		grid.add_child(_label(str(row[0]), 12, color_muted))
+		grid.add_child(_label(str(row[1]), 12, color_text))
+
+
+func _set_citizens_filter(filter: String) -> void:
+	citizens_filter = filter
+	_refresh()
+
+
+func _select_citizen(citizen_id: int) -> void:
+	selected_citizen_id = citizen_id if selected_citizen_id != citizen_id else -1
+	_refresh()
+
+
+func _citizen_status_color(status: String) -> Color:
+	match status:
+		"Free":
+			return Color(0.52, 0.74, 0.38)
+		"Working":
+			return Color(0.46, 0.72, 0.88)
+		"Building":
+			return color_accent
+	return color_muted
+
+
+func _make_citizen_stat_chip(parent: HBoxContainer, label_text: String, value: String, value_color: Color) -> void:
+	var chip := PanelContainer.new()
+	chip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(chip, color_panel_soft, Color(0.30, 0.27, 0.20), 1)
+	parent.add_child(chip)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 6)
+	cm.add_theme_constant_override("margin_top", 5)
+	cm.add_theme_constant_override("margin_right", 6)
+	cm.add_theme_constant_override("margin_bottom", 5)
+	chip.add_child(cm)
+
+	var cv := VBoxContainer.new()
+	cv.add_theme_constant_override("separation", 0)
+	cm.add_child(cv)
+
+	var lbl := _label(label_text, 10, color_muted)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cv.add_child(lbl)
+
+	var val_lbl := _label(value, 15, value_color)
+	val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cv.add_child(val_lbl)
+
+
+func _draw_production_panel() -> void:
+	var all_entries: Array = ProductionPresenterScript.present_buildings(game)
+
+	# Count entries per filter key for summary chips
+	var counts := {"Producing": 0, "No Workers": 0, "Building": 0, "Idle": 0}
+	for entry in all_entries:
+		var fk := str(entry.filter_key)
+		if counts.has(fk):
+			counts[fk] += 1
+
+	# Summary stat chips
+	var stat_row := HBoxContainer.new()
+	stat_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	stat_row.add_theme_constant_override("separation", 6)
+	detail_content.add_child(stat_row)
+	_make_citizen_stat_chip(stat_row, "Producing", str(counts["Producing"]), _production_status_color("Producing"))
+	_make_citizen_stat_chip(stat_row, "No Workers", str(counts["No Workers"]), _production_status_color("No Workers"))
+	_make_citizen_stat_chip(stat_row, "Building", str(counts["Building"]), _production_status_color("Building X%"))
+	_make_citizen_stat_chip(stat_row, "Idle", str(counts["Idle"]), color_muted)
+
+	# Filter chips
+	var filter_row := HBoxContainer.new()
+	filter_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filter_row.add_theme_constant_override("separation", 6)
+	detail_content.add_child(filter_row)
+	for f in ["All", "Producing", "No Workers", "Building"]:
+		var chip := Button.new()
+		chip.text = f
+		chip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		chip.custom_minimum_size.y = 30
+		chip.add_theme_font_size_override("font_size", 12)
+		chip.pressed.connect(_set_production_filter.bind(f))
+		_style_button(chip, production_filter == f)
+		filter_row.add_child(chip)
+
+	# Category labels + scrollable roster
+	detail_content.add_child(_label("Buildings", 13, color_muted))
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	detail_content.add_child(scroll)
+
+	var roster := VBoxContainer.new()
+	roster.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	roster.add_theme_constant_override("separation", 5)
+	scroll.add_child(roster)
+
+	var last_category := ""
+	var shown := 0
+	for entry in all_entries:
+		if production_filter != "All" and str(entry.filter_key) != production_filter:
+			continue
+		# Category section header
+		var cat_label := str(entry.category_label)
+		if cat_label != last_category:
+			var cat_lbl := _label(cat_label, 11, color_accent)
+			cat_lbl.custom_minimum_size.y = 20
+			roster.add_child(cat_lbl)
+			last_category = cat_label
+		shown += 1
+		_draw_production_row(roster, entry)
+
+	if shown == 0:
+		var empty := _label("No buildings match this filter.", 12, color_muted)
+		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		roster.add_child(empty)
+
+	# Separator + selected detail
+	detail_content.add_child(HSeparator.new())
+
+	var selected_entry: Dictionary = {}
+	for e in all_entries:
+		if str(e.id) == selected_production_id:
+			selected_entry = e
+			break
+
+	if selected_entry.is_empty():
+		var hint := _label("Select a building to see details.", 12, color_muted)
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		detail_content.add_child(hint)
+	else:
+		_draw_production_detail_panel(selected_entry)
+
+
+func _draw_production_row(parent: VBoxContainer, entry: Dictionary) -> void:
+	var eid := str(entry.id)
+	var selected := eid == selected_production_id
+
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
+	card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_style_panel(card,
+		Color(0.26, 0.23, 0.16) if selected else color_panel_soft,
+		color_accent if selected else Color(0.30, 0.27, 0.20),
+		1)
+	card.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			_select_production_entry(eid)
+	)
+	parent.add_child(card)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 10)
+	cm.add_theme_constant_override("margin_top", 7)
+	cm.add_theme_constant_override("margin_right", 10)
+	cm.add_theme_constant_override("margin_bottom", 7)
+	card.add_child(cm)
+
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 3)
+	cm.add_child(box)
+
+	# Row 1: Name + Status
+	var name_row := HBoxContainer.new()
+	name_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(name_row)
+
+	var name_lbl := _label(str(entry.name), 14, color_text)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_row.add_child(name_lbl)
+
+	var status_str := str(entry.status)
+	var status_lbl := _label(status_str, 11, _production_status_color(status_str))
+	status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	name_row.add_child(status_lbl)
+
+	# Row 2: Grid + Workers
+	var meta_row := HBoxContainer.new()
+	meta_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	meta_row.add_theme_constant_override("separation", 8)
+	box.add_child(meta_row)
+
+	var grid_lbl := _label("Grid: %s" % str(entry.position_label), 11, color_muted)
+	meta_row.add_child(grid_lbl)
+
+	var workers_lbl := _label("Workers: %s/%s" % [int(entry.workers), int(entry.capacity)], 11, color_muted)
+	meta_row.add_child(workers_lbl)
+
+	# Row 3: Output + Last
+	var output_row := HBoxContainer.new()
+	output_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	output_row.add_theme_constant_override("separation", 8)
+	box.add_child(output_row)
+
+	var out_lbl := _label("→ %s" % str(entry.output_label), 11, color_muted)
+	out_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	output_row.add_child(out_lbl)
+
+	var last_str := str(entry.last_label)
+	if last_str != "":
+		var last_lbl := _label(last_str, 11, _production_last_color(last_str))
+		last_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		output_row.add_child(last_lbl)
+
+
+func _draw_production_detail_panel(entry: Dictionary) -> void:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(panel, Color(0.22, 0.20, 0.15), color_accent, 1)
+	detail_content.add_child(panel)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 12)
+	cm.add_theme_constant_override("margin_top", 10)
+	cm.add_theme_constant_override("margin_right", 12)
+	cm.add_theme_constant_override("margin_bottom", 10)
+	panel.add_child(cm)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 5)
+	cm.add_child(box)
+
+	# Name + Status header
+	var header_row := HBoxContainer.new()
+	header_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(header_row)
+
+	var name_lbl := _label(str(entry.name), 15, color_text)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(name_lbl)
+
+	var status_str := str(entry.status)
+	var status_lbl := _label(status_str, 12, _production_status_color(status_str))
+	header_row.add_child(status_lbl)
+
+	var cat_lbl := _label(str(entry.category_label), 12, color_muted)
+	box.add_child(cat_lbl)
+
+	box.add_child(HSeparator.new())
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 4)
+	box.add_child(grid)
+
+	var workers_str := "%s / %s" % [int(entry.workers), int(entry.capacity)]
+	var last_str := str(entry.last_label)
+	var last_display := last_str if last_str != "" else "None this tick"
+	var under_con: bool = entry.get("under_construction", false)
+
+	for row in [
+		["Grid", str(entry.position_label)],
+		["Workers", workers_str],
+		["Output", str(entry.output_label)],
+		["Last Tick", last_display],
+		["Quantity", str(int(entry.quantity))],
+		["Under Const.", "Yes — %s%%" % int(entry.build_percent) if under_con else "No"],
+	]:
+		grid.add_child(_label(str(row[0]), 12, color_muted))
+		grid.add_child(_label(str(row[1]), 12, color_text))
+
+
+func _set_production_filter(filter: String) -> void:
+	production_filter = filter
+	_refresh()
+
+
+func _select_production_entry(entry_id: String) -> void:
+	selected_production_id = entry_id if selected_production_id != entry_id else ""
+	_refresh()
+
+
+func _production_status_color(status: String) -> Color:
+	if status == "Producing" or status == "Crafting":
+		return Color(0.52, 0.74, 0.38)
+	if status == "Harvesting":
+		return Color(0.52, 0.72, 0.58)
+	if status == "No Workers":
+		return Color(0.74, 0.56, 0.42)
+	if status.begins_with("Building"):
+		return color_accent
+	if status == "Storage Full":
+		return Color(0.82, 0.68, 0.30)
+	if status == "No Input":
+		return Color(0.80, 0.48, 0.32)
+	return color_muted
+
+
+func _production_last_color(last_str: String) -> Color:
+	if last_str.begins_with("+"):
+		return Color(0.52, 0.74, 0.38)
+	if last_str == "Storage Full":
+		return Color(0.82, 0.68, 0.30)
+	if last_str == "No Input":
+		return Color(0.80, 0.48, 0.32)
+	return color_muted
+
+
+func _draw_storage_panel() -> void:
+	var barn := StoragePresenterScript.barn_summary(game)
+	var warehouse := StoragePresenterScript.warehouse_summary(game)
+	var all_rows: Array = StoragePresenterScript.resource_rows(game)
+
+	# Storage summary cards (side by side)
+	var cards_row := HBoxContainer.new()
+	cards_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cards_row.add_theme_constant_override("separation", 8)
+	detail_content.add_child(cards_row)
+	_draw_storage_summary_card(cards_row, barn)
+	_draw_storage_summary_card(cards_row, warehouse)
+
+	# Filter chips
+	var filter_row := HBoxContainer.new()
+	filter_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filter_row.add_theme_constant_override("separation", 6)
+	detail_content.add_child(filter_row)
+	for f in ["All", "Food", "Materials", "Stocked"]:
+		var chip := Button.new()
+		chip.text = f
+		chip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		chip.custom_minimum_size.y = 30
+		chip.add_theme_font_size_override("font_size", 13)
+		chip.pressed.connect(_set_storage_filter.bind(f))
+		_style_button(chip, storage_filter == f)
+		filter_row.add_child(chip)
+
+	# Resources label
+	detail_content.add_child(_label("Resources", 13, color_muted))
+
+	# Scrollable resource roster
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	detail_content.add_child(scroll)
+
+	var roster := VBoxContainer.new()
+	roster.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	roster.add_theme_constant_override("separation", 4)
+	scroll.add_child(roster)
+
+	var show_all := storage_filter == "All"
+	var last_cat := ""
+	var shown := 0
+
+	for row in all_rows:
+		var cat := str(row.category)
+		var amount := int(row.amount)
+		var pass_filter := false
+		match storage_filter:
+			"All":
+				pass_filter = true
+			"Food":
+				pass_filter = cat == "food"
+			"Materials":
+				pass_filter = cat == "industry" or cat == "crafted"
+			"Stocked":
+				pass_filter = amount > 0
+
+		if not pass_filter:
+			continue
+
+		# Section header (only in All mode, and only when category changes)
+		if show_all and str(row.category_label) != last_cat:
+			last_cat = str(row.category_label)
+			var storage_ctx := barn if cat == "food" else warehouse
+			var sec_text := "%s  ·  %s %s/%s" % [
+				str(row.category_label),
+				str(storage_ctx.label),
+				int(storage_ctx.current),
+				int(storage_ctx.capacity)
+			]
+			var sec_lbl := _label(sec_text, 11, color_accent)
+			sec_lbl.custom_minimum_size.y = 22
+			roster.add_child(sec_lbl)
+
+		shown += 1
+		_draw_resource_row(roster, row)
+
+	if shown == 0:
+		var empty := _label("No resources match this filter.", 12, color_muted)
+		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		roster.add_child(empty)
+
+	# Separator + selected resource detail
+	detail_content.add_child(HSeparator.new())
+
+	var selected_row: Dictionary = {}
+	for r in all_rows:
+		if str(r.id) == selected_resource_id:
+			selected_row = r
+			break
+
+	if selected_row.is_empty():
+		var hint := _label("Select a resource to see details.", 12, color_muted)
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		detail_content.add_child(hint)
+	else:
+		_draw_storage_resource_detail(selected_row)
+
+
+func _draw_storage_summary_card(parent: HBoxContainer, summary: Dictionary) -> void:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(card, Color(0.20, 0.19, 0.15), color_border, 1)
+	parent.add_child(card)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 8)
+	cm.add_theme_constant_override("margin_top", 8)
+	cm.add_theme_constant_override("margin_right", 8)
+	cm.add_theme_constant_override("margin_bottom", 8)
+	card.add_child(cm)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	cm.add_child(box)
+
+	var name_lbl := _label(str(summary.label), 14, color_accent)
+	box.add_child(name_lbl)
+
+	var role_lbl := _label(str(summary.role), 10, color_muted)
+	box.add_child(role_lbl)
+
+	var bar := ProgressBar.new()
+	bar.min_value = 0
+	bar.max_value = maxi(int(summary.capacity), 1)
+	bar.value = int(summary.current)
+	bar.custom_minimum_size.y = 12
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.show_percentage = false
+	box.add_child(bar)
+
+	var pct := int(summary.fill_pct)
+	var status_str := str(summary.fill_status)
+	var stats_row := HBoxContainer.new()
+	stats_row.add_theme_constant_override("separation", 4)
+	box.add_child(stats_row)
+
+	var fill_lbl := _label("%s/%s" % [int(summary.current), int(summary.capacity)], 10, color_muted)
+	fill_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	stats_row.add_child(fill_lbl)
+
+	var status_lbl := _label(status_str, 10, _storage_fill_color(pct))
+	status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	stats_row.add_child(status_lbl)
+
+
+func _draw_resource_row(parent: VBoxContainer, row: Dictionary) -> void:
+	var rid := str(row.id)
+	var selected := rid == selected_resource_id
+	var amount := int(row.amount)
+
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
+	card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_style_panel(card,
+		Color(0.26, 0.23, 0.16) if selected else color_panel_soft,
+		color_accent if selected else Color(0.30, 0.27, 0.20),
+		1)
+	card.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			_select_resource(rid)
+	)
+	parent.add_child(card)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 10)
+	cm.add_theme_constant_override("margin_top", 5)
+	cm.add_theme_constant_override("margin_right", 10)
+	cm.add_theme_constant_override("margin_bottom", 5)
+	card.add_child(cm)
+
+	var line := HBoxContainer.new()
+	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cm.add_child(line)
+
+	var name_lbl := _label(str(row.name), 13, color_text)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line.add_child(name_lbl)
+
+	var amount_color := color_text if amount > 0 else color_muted
+	var amount_lbl := _label(str(amount), 13, amount_color)
+	amount_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	amount_lbl.custom_minimum_size.x = 38
+	line.add_child(amount_lbl)
+
+
+func _draw_storage_resource_detail(row: Dictionary) -> void:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(panel, Color(0.22, 0.20, 0.15), color_accent, 1)
+	detail_content.add_child(panel)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 12)
+	cm.add_theme_constant_override("margin_top", 10)
+	cm.add_theme_constant_override("margin_right", 12)
+	cm.add_theme_constant_override("margin_bottom", 10)
+	panel.add_child(cm)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 5)
+	cm.add_child(box)
+
+	# Name + Amount header
+	var header_row := HBoxContainer.new()
+	header_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(header_row)
+
+	var name_lbl := _label(str(row.name), 15, color_text)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(name_lbl)
+
+	var amount := int(row.amount)
+	var amount_lbl := _label(str(amount), 15, color_text if amount > 0 else color_muted)
+	header_row.add_child(amount_lbl)
+
+	var cat_lbl := _label("%s  ·  %s" % [str(row.category_label), str(row.storage_label)], 12, color_muted)
+	box.add_child(cat_lbl)
+
+	box.add_child(HSeparator.new())
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 4)
+	box.add_child(grid)
+
+	var pct := int(row.storage_fill_pct)
+	for detail_row in [
+		["Storage Fill", "%s / %s" % [int(row.storage_current), int(row.storage_capacity)]],
+		["Fill Level", "%s%%" % pct],
+		["Storage Status", str(row.storage_fill_status)],
+	]:
+		grid.add_child(_label(str(detail_row[0]), 12, color_muted))
+		grid.add_child(_label(str(detail_row[1]), 12, color_text))
+
+
+func _set_storage_filter(filter: String) -> void:
+	storage_filter = filter
+	_refresh()
+
+
+func _select_resource(resource_id: String) -> void:
+	selected_resource_id = resource_id if selected_resource_id != resource_id else ""
+	_refresh()
+
+
+func _storage_fill_color(pct: int) -> Color:
+	if pct >= 95:
+		return Color(0.80, 0.38, 0.30)
+	if pct >= 75:
+		return Color(0.82, 0.68, 0.30)
+	if pct >= 20:
+		return Color(0.52, 0.74, 0.38)
+	if pct > 0:
+		return Color(0.74, 0.56, 0.42)
+	return color_muted
+
+
+func _draw_events_panel() -> void:
+	var all_events: Array = EventsPresenterScript.present_events(game)
+	var count := all_events.size()
+
+	var count_lbl := _label(
+		"%s recent event%s" % [count, "s" if count != 1 else ""] if count > 0 else "No events recorded yet.",
+		12, color_muted)
+	detail_content.add_child(count_lbl)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	detail_content.add_child(scroll)
+
+	var log_box := VBoxContainer.new()
+	log_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	log_box.add_theme_constant_override("separation", 5)
+	scroll.add_child(log_box)
+
+	if all_events.is_empty():
+		var empty := _label("Settlement activity will appear here.", 13, color_muted)
+		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		log_box.add_child(empty)
+		return
+
+	for event in all_events:
+		_draw_event_row(log_box, event)
+
+
+func _draw_event_row(parent: VBoxContainer, event: Dictionary) -> void:
+	var cat := str(event.category)
+	var cat_color := _event_category_color(cat)
+
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var style := StyleBoxFlat.new()
+	style.bg_color = color_panel_soft
+	style.border_color = cat_color
+	style.border_width_left = 3
+	style.border_width_right = 0
+	style.border_width_top = 0
+	style.border_width_bottom = 0
+	style.corner_radius_top_left = 0
+	style.corner_radius_bottom_left = 0
+	style.corner_radius_top_right = 3
+	style.corner_radius_bottom_right = 3
+	card.add_theme_stylebox_override("panel", style)
+	parent.add_child(card)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 10)
+	cm.add_theme_constant_override("margin_top", 6)
+	cm.add_theme_constant_override("margin_right", 10)
+	cm.add_theme_constant_override("margin_bottom", 6)
+	card.add_child(cm)
+
+	var line := HBoxContainer.new()
+	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line.add_theme_constant_override("separation", 8)
+	cm.add_child(line)
+
+	var text_lbl := _label(str(event.text), 13, color_text)
+	text_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	text_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	line.add_child(text_lbl)
+
+	var cat_label := str(event.category_label)
+	if cat_label != "—":
+		var cat_lbl := _label(cat_label, 10, cat_color)
+		cat_lbl.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+		line.add_child(cat_lbl)
+
+
+func _event_category_color(category: String) -> Color:
+	match category:
+		"construction":
+			return color_accent
+		"production":
+			return Color(0.52, 0.74, 0.38)
+	return color_muted
+
+
+func _draw_management_panel() -> void:
+	var overview := ManagementPresenterScript.overview(game)
+	var status_items := ManagementPresenterScript.status_items(game)
+	var warn_list := ManagementPresenterScript.warnings(game)
+
+	# Wrap all content in a scroll container so it doesn't clip on small screens
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	detail_content.add_child(scroll)
+
+	var body := VBoxContainer.new()
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 10)
+	scroll.add_child(body)
+
+	# === Overview ===
+	body.add_child(_label("Settlement Overview", 13, color_accent))
+
+	# Date + time state
+	var time_state := "Paused" if not game.running else "%sx" % time_scale
+	var date_row := HBoxContainer.new()
+	date_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(date_row)
+	var date_lbl := _label(str(overview.date), 12, color_muted)
+	date_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	date_row.add_child(date_lbl)
+	var time_lbl := _label(time_state, 12, color_accent if game.running else color_muted)
+	time_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	date_row.add_child(time_lbl)
+
+	# Population chips
+	var pop_row := HBoxContainer.new()
+	pop_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pop_row.add_theme_constant_override("separation", 6)
+	body.add_child(pop_row)
+	_make_citizen_stat_chip(pop_row, "Citizens", str(int(overview.population)), color_text)
+	_make_citizen_stat_chip(pop_row, "Free", str(int(overview.free)), _citizen_status_color("Free"))
+	_make_citizen_stat_chip(pop_row, "Working", str(int(overview.assigned)), _citizen_status_color("Working"))
+	_make_citizen_stat_chip(pop_row, "Building", str(int(overview.builders)), _citizen_status_color("Building"))
+
+	# Wellness + food chips
+	var well_row := HBoxContainer.new()
+	well_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	well_row.add_theme_constant_override("separation", 6)
+	body.add_child(well_row)
+	var hp := int(overview.global_health)
+	var joy := int(overview.global_happiness)
+	_make_citizen_stat_chip(well_row, "Avg Health", "%s%%" % hp, _wellness_color(hp))
+	_make_citizen_stat_chip(well_row, "Avg Joy", "%s%%" % joy, _wellness_color(joy))
+	_make_citizen_stat_chip(well_row, "Food", str(int(overview.total_food)), color_muted)
+
+	body.add_child(HSeparator.new())
+
+	# === Status ===
+	body.add_child(_label("Settlement Status", 13, color_accent))
+
+	for item in status_items:
+		_draw_management_status_item(body, item)
+
+	# === Warnings ===
+	if not warn_list.is_empty():
+		body.add_child(HSeparator.new())
+		body.add_child(_label("Active Alerts", 13, Color(0.82, 0.68, 0.30)))
+		for w in warn_list:
+			_draw_management_warning(body, str(w))
+
+	body.add_child(HSeparator.new())
+
+	# === Controls ===
+	body.add_child(_label("Controls", 13, color_accent))
+
+	var save_btn := Button.new()
+	save_btn.text = "Save Game"
+	save_btn.custom_minimum_size.y = 40
+	save_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_btn.pressed.connect(_management_save_game)
+	_style_button(save_btn, true)
+	body.add_child(save_btn)
+
+	var auto_note := _label("Game auto-saves each day cycle.", 11, color_muted)
+	body.add_child(auto_note)
+
+	var reset_btn := Button.new()
+	reset_btn.text = "Clear Save Data"
+	reset_btn.custom_minimum_size.y = 38
+	reset_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reset_btn.pressed.connect(_management_reset_save)
+	_style_button(reset_btn, false)
+	body.add_child(reset_btn)
+
+	var reset_note := _label("Requires scene restart to take effect.", 11, color_muted)
+	reset_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(reset_note)
+
+
+func _draw_management_status_item(parent: VBoxContainer, item: Dictionary) -> void:
+	var level := str(item.level)
+	var level_color := _management_level_color(level)
+
+	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 8)
+	parent.add_child(row)
+
+	var dot := _label("*", 12, level_color)
+	dot.custom_minimum_size.x = 12
+	row.add_child(dot)
+
+	var lbl := _label(str(item.label), 12, color_muted)
+	lbl.custom_minimum_size.x = 96
+	row.add_child(lbl)
+
+	var val := _label(str(item.value), 12, level_color)
+	val.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	val.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row.add_child(val)
+
+
+func _draw_management_warning(parent: VBoxContainer, text: String) -> void:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_panel(card, Color(0.24, 0.21, 0.14), Color(0.82, 0.68, 0.30), 1)
+	parent.add_child(card)
+
+	var cm := MarginContainer.new()
+	cm.add_theme_constant_override("margin_left", 8)
+	cm.add_theme_constant_override("margin_top", 5)
+	cm.add_theme_constant_override("margin_right", 8)
+	cm.add_theme_constant_override("margin_bottom", 5)
+	card.add_child(cm)
+
+	var lbl := _label("! " + text, 12, Color(0.82, 0.68, 0.30))
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cm.add_child(lbl)
+
+
+func _management_save_game() -> void:
+	game.save_game()
+
+
+func _management_reset_save() -> void:
+	game.reset_save()
+	_refresh()
+
+
+func _management_level_color(level: String) -> Color:
+	match level:
+		"ok":
+			return Color(0.52, 0.74, 0.38)
+		"active":
+			return color_accent
+		"warning":
+			return Color(0.82, 0.68, 0.30)
+		"critical":
+			return Color(0.80, 0.38, 0.30)
+	return color_muted
+
+
+func _wellness_color(pct: int) -> Color:
+	if pct >= 70:
+		return Color(0.52, 0.74, 0.38)
+	if pct >= 50:
+		return color_accent
+	if pct >= 30:
+		return Color(0.82, 0.68, 0.30)
+	return Color(0.80, 0.38, 0.30)
+
+
+func _select_build_entry(entry_id: String) -> void:
+	selected_placed_cell = Vector2i(-1, -1)
+	selected_build_id = entry_id
+	_prepare_selected_build_placement()
+
+
+func _prepare_selected_build_placement() -> void:
+	selected_placed_cell = Vector2i(-1, -1)
+	var entries: Array = BuildCatalogScript.entries(game)
+	if entries.is_empty():
+		return
+	var entry := _find_build_entry(entries, selected_build_id)
+	placement_state.prepare(entry)
+	_refresh()
+
+
+func _cancel_build_placement() -> void:
+	placement_state.cancel()
+	_refresh()
+
+
+func _confirm_build_placement() -> void:
+	if not placement_state.has_selection():
+		return
+	if not placement_state.has_valid_target():
+		placement_state.message = "Choose an empty cell before confirming."
+		_refresh()
+		return
+
+	var entry := placement_state.selected_entry
+	var building := _building_data_for_entry(entry)
+	if bool(building.get("building", false)):
+		placement_state.active = false
+		placement_state.message = "Already under construction."
+		_refresh()
+		return
+
+	var target_cell := placement_state.target_cell
+	if not game.place_building(str(entry.get("category", "")), int(entry.get("index", -1)), target_cell.x, target_cell.y):
+		placement_state.message = "That cell cannot accept a building."
+		_refresh()
+		return
+
+	placement_state.confirm()
+	game.start_build(str(entry.get("category", "")), int(entry.get("index", -1)))
+	selected_placed_cell = target_cell
+	game.save_game()
+	_refresh()
+
+
+func _is_placing_build() -> bool:
+	return selected_section == "Build" and placement_state != null and placement_state.active
+
+
+func _has_selected_placed_building() -> bool:
+	return selected_placed_cell.x >= 0 and selected_placed_cell.y >= 0 and not game.placement_at(selected_placed_cell.x, selected_placed_cell.y).is_empty()
+
+
+func _clear_placed_building_selection() -> void:
+	selected_placed_cell = Vector2i(-1, -1)
+	_refresh()
+
+
+func _assign_selected_building_worker() -> void:
+	var tile := _selected_placed_tile()
+	if tile.is_empty() or not bool(tile.can_assign_worker):
+		return
+	game.add_worker(str(tile.category_key), int(tile.index))
+	game.save_game()
+	_refresh()
+
+
+func _remove_selected_building_worker() -> void:
+	var tile := _selected_placed_tile()
+	if tile.is_empty() or not bool(tile.can_remove_worker):
+		return
+	game.remove_worker(str(tile.category_key), int(tile.index))
+	game.save_game()
+	_refresh()
+
+
+func _assign_selected_building_builder() -> void:
+	var tile := _selected_placed_tile()
+	if tile.is_empty() or not bool(tile.can_assign_builder):
+		return
+	game.assign_builder(str(tile.category_key), int(tile.index))
+	game.save_game()
+	_refresh()
+
+
+func _remove_selected_building_builder() -> void:
+	var tile := _selected_placed_tile()
+	if tile.is_empty() or not bool(tile.can_remove_builder):
+		return
+	game.remove_builder(str(tile.category_key), int(tile.index))
+	game.save_game()
+	_refresh()
+
+
+func _demolish_selected_building() -> void:
+	if selected_placed_cell.x < 0 or selected_placed_cell.y < 0:
+		return
+	if game.demolish_placed_building(selected_placed_cell.x, selected_placed_cell.y):
+		selected_placed_cell = Vector2i(-1, -1)
+		if placement_state != null:
+			placement_state.cancel()
+		_refresh()
+
+
+func _selected_placed_tile() -> Dictionary:
+	if not _has_selected_placed_building():
+		return {}
+	return PlacedBuildingPresenterScript.tile(game, game.placement_at(selected_placed_cell.x, selected_placed_cell.y))
+
+
+func _worker_detail_text(tile: Dictionary) -> String:
+	if not bool(tile.has_workers):
+		return "Not used"
+	return "%s / %s" % [int(tile.workers), int(tile.capacity)]
+
+
+func _worker_action_hint(tile: Dictionary) -> String:
+	if bool(tile.can_assign_worker):
+		return WorkforcePresenterScript.free_text(game)
+	if int(tile.workers) >= int(tile.capacity):
+		return "Worker capacity is full."
+	if int(WorkforcePresenterScript.summary(game).free) <= 0:
+		return WorkforcePresenterScript.assignment_blocked_text(game)
+	return "Worker actions available."
+
+
+func _find_build_entry(entries: Array, entry_id: String) -> Dictionary:
+	for entry in entries:
+		if str(entry.id) == entry_id:
+			return entry
+	return entries[0]
+
+
+func _building_data_for_entry(entry: Dictionary) -> Dictionary:
+	var list: Array = []
+	var category := str(entry.get("category", ""))
+	if category == "industry":
+		list = game.industry_buildings
+	elif category == "food":
+		list = game.food_buildings
+	elif category == "craft":
+		list = game.craft_buildings
+	elif category == "town":
+		list = game.town_services
+	elif category == "storage":
+		list = game.storages
+
+	var index := int(entry.get("index", -1))
+	if index < 0 or index >= list.size():
+		return {}
+	return list[index]
+
+
 func _add_resource_chip(title: String, value: String) -> void:
 	var chip := PanelContainer.new()
 	chip.custom_minimum_size = Vector2(104, 38)
@@ -314,31 +1963,33 @@ func _add_resource_chip(title: String, value: String) -> void:
 	box.add_child(_label(value, 16, color_text))
 
 
-func _add_date_chip() -> void:
-	var date_chip := PanelContainer.new()
-	date_chip.custom_minimum_size = Vector2(166, 38)
-	_style_panel(date_chip, color_panel_soft, Color(0.30, 0.27, 0.20), 1)
-	resource_row.add_child(date_chip)
+func _add_date_block(parent: HBoxContainer) -> void:
+	var chip := PanelContainer.new()
+	chip.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_style_panel(chip, color_panel_soft, Color(0.30, 0.27, 0.20), 1)
+	parent.add_child(chip)
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 10)
-	margin.add_theme_constant_override("margin_top", 5)
+	margin.add_theme_constant_override("margin_top", 4)
 	margin.add_theme_constant_override("margin_right", 10)
-	margin.add_theme_constant_override("margin_bottom", 5)
-	date_chip.add_child(margin)
+	margin.add_theme_constant_override("margin_bottom", 4)
+	chip.add_child(margin)
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 0)
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_theme_constant_override("separation", 2)
 	margin.add_child(box)
-	box.add_child(_label("Date", 11, color_muted))
-	box.add_child(_label("Day %s / Month %s / Year %s" % [game.day, game.month, game.year], 14, color_text))
+	box.add_child(_label("Date", 10, color_muted))
+	box.add_child(_label("Day %s  ·  %s / %s" % [game.day, game.month, game.year], 14, color_text))
 
 
-func _add_time_controls() -> void:
+func _add_time_controls(parent: HBoxContainer) -> void:
 	time_buttons.clear()
 	var group := HBoxContainer.new()
-	group.add_theme_constant_override("separation", 4)
-	resource_row.add_child(group)
+	group.add_theme_constant_override("separation", 3)
+	group.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	parent.add_child(group)
 
 	var pause := _time_button("Pause")
 	pause.pressed.connect(_toggle_pause)
@@ -346,15 +1997,125 @@ func _add_time_controls() -> void:
 	time_buttons["Pause"] = pause
 
 	for speed in [1, 2, 3]:
-		var button := _time_button("%sx" % speed)
-		button.pressed.connect(_set_time_scale.bind(speed))
-		group.add_child(button)
-		time_buttons[speed] = button
+		var btn := _time_button("%sx" % speed)
+		btn.pressed.connect(_set_time_scale.bind(speed))
+		group.add_child(btn)
+		time_buttons[speed] = btn
 
 	_update_time_buttons()
 
 
-func _add_detail_row(title: String, value: String) -> void:
+func _add_top_chip(parent: HBoxContainer, title: String, value: String, value_color: Color) -> void:
+	var chip := PanelContainer.new()
+	chip.custom_minimum_size = Vector2(82, 0)
+	chip.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_style_panel(chip, color_panel_soft, Color(0.30, 0.27, 0.20), 1)
+	parent.add_child(chip)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_top", 4)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_bottom", 4)
+	chip.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_theme_constant_override("separation", 1)
+	margin.add_child(box)
+
+	var lbl := _label(title, 10, color_muted)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(lbl)
+
+	var val := _label(value, 17, value_color)
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(val)
+
+
+func _top_vsep() -> VSeparator:
+	var sep := VSeparator.new()
+	sep.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sep.custom_minimum_size = Vector2(2, 0)
+	var style := StyleBoxLine.new()
+	style.color = color_border
+	style.grow_begin = 8
+	style.grow_end = 8
+	sep.add_theme_stylebox_override("separator", style)
+	return sep
+
+
+func _add_top_warnings() -> void:
+	var daily_need := game.citizens.size() * 20
+	var food := game.total_food()
+	var shown := 0
+
+	if food < daily_need:
+		_add_top_warning_chip("Food critical", Color(0.80, 0.38, 0.30))
+		shown += 1
+	elif food < daily_need * 2:
+		_add_top_warning_chip("Food low", Color(0.82, 0.68, 0.30))
+		shown += 1
+
+	if shown < 2:
+		var wh_cap := game.storage_capacity("WAREHOUSE")
+		if wh_cap > 0 and game.warehouse_fullness() * 100 / wh_cap >= 90:
+			_add_top_warning_chip("Storage full", Color(0.82, 0.68, 0.30))
+			shown += 1
+
+	if shown < 2:
+		var barn_cap := game.storage_capacity("BARN")
+		if barn_cap > 0 and food * 100 / barn_cap >= 90:
+			_add_top_warning_chip("Barn full", Color(0.82, 0.68, 0.30))
+
+
+func _add_top_warning_chip(text: String, warn_color: Color) -> void:
+	var chip := PanelContainer.new()
+	chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_style_panel(chip, Color(0.24, 0.18, 0.13), warn_color, 1)
+	resource_row.add_child(chip)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_top", 4)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_bottom", 4)
+	chip.add_child(margin)
+
+	margin.add_child(_label("! " + text, 11, warn_color))
+
+
+func _style_time_button(button: Button, active: bool, is_pause: bool) -> void:
+	button.add_theme_color_override("font_hover_color", color_text)
+	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+	if is_pause and active:
+		button.add_theme_color_override("font_color", Color(0.88, 0.58, 0.52))
+		button.add_theme_font_size_override("font_size", 13)
+		var fill := Color(0.28, 0.14, 0.13)
+		var border := Color(0.64, 0.26, 0.20)
+		button.add_theme_stylebox_override("normal", _flat_style(fill, border, 2))
+		button.add_theme_stylebox_override("hover", _flat_style(Color(fill.r + 0.04, fill.g + 0.03, fill.b + 0.03), border, 2))
+		button.add_theme_stylebox_override("pressed", _flat_style(fill, border, 2))
+	elif active:
+		button.add_theme_color_override("font_color", color_text)
+		button.add_theme_font_size_override("font_size", 14)
+		var fill := Color(0.38, 0.28, 0.12)
+		var border := color_accent
+		button.add_theme_stylebox_override("normal", _flat_style(fill, border, 2))
+		button.add_theme_stylebox_override("hover", _flat_style(Color(fill.r + 0.04, fill.g + 0.04, fill.b + 0.03), border, 2))
+		button.add_theme_stylebox_override("pressed", _flat_style(fill, border, 2))
+	else:
+		button.add_theme_color_override("font_color", color_muted)
+		button.add_theme_font_size_override("font_size", 13)
+		var fill := Color(0.14, 0.14, 0.13)
+		var border := Color(0.24, 0.22, 0.18)
+		button.add_theme_stylebox_override("normal", _flat_style(fill, border, 1))
+		button.add_theme_stylebox_override("hover", _flat_style(Color(fill.r + 0.05, fill.g + 0.05, fill.b + 0.05), border, 1))
+		button.add_theme_stylebox_override("pressed", _flat_style(fill, border, 1))
+
+
+func _add_detail_row(title: String, value: String, value_color: Color = Color(-1, -1, -1)) -> void:
 	var row := HBoxContainer.new()
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	detail_content.add_child(row)
@@ -363,12 +2124,29 @@ func _add_detail_row(title: String, value: String) -> void:
 	left.custom_minimum_size.x = 86
 	row.add_child(left)
 
-	var right := _label(value, 13, color_text)
+	var right := _label(value, 13, color_text if value_color.r < 0.0 else value_color)
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(right)
 
 
+func _add_sidebar_action(parent: BoxContainer, text: String, callback: Callable, enabled: bool, primary: bool = false) -> void:
+	var button := Button.new()
+	button.text = text
+	button.disabled = not enabled
+	button.custom_minimum_size.y = 38
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if enabled:
+		button.pressed.connect(callback)
+	_style_button(button, primary and enabled)
+	if not enabled:
+		button.add_theme_color_override("font_color", Color(0.42, 0.40, 0.35))
+		button.add_theme_stylebox_override("disabled", _button_style(false))
+	parent.add_child(button)
+
+
 func _select_section(section: String) -> void:
+	if selected_section == "Build" and section != "Build" and placement_state != null:
+		placement_state.cancel()
 	selected_section = section
 	_refresh()
 
@@ -393,10 +2171,10 @@ func _update_time_buttons() -> void:
 	if not time_buttons.has("Pause"):
 		return
 
-	_style_button(time_buttons["Pause"], not game.running)
+	_style_time_button(time_buttons["Pause"], not game.running, true)
 	for speed in [1, 2, 3]:
 		if time_buttons.has(speed):
-			_style_button(time_buttons[speed], game.running and time_scale == speed)
+			_style_time_button(time_buttons[speed], game.running and time_scale == speed, false)
 
 
 func _update_nav_buttons() -> void:
@@ -420,7 +2198,8 @@ func _nav_button(text: String) -> Button:
 func _time_button(text: String) -> Button:
 	var button := Button.new()
 	button.text = text
-	button.custom_minimum_size = Vector2(54, 38)
+	button.custom_minimum_size = Vector2(54, 0)
+	button.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_style_button(button, false)
 	return button
 
@@ -445,6 +2224,137 @@ func _button_style(active: bool) -> StyleBoxFlat:
 	style.corner_radius_bottom_left = 4
 	style.corner_radius_bottom_right = 4
 	return style
+
+
+func _style_placement_cell(button: Button, valid: bool, selected: bool, placement: Dictionary = {}) -> void:
+	button.add_theme_font_size_override("font_size", 11)
+	button.add_theme_color_override("font_hover_color", color_text)
+	var occupied := not placement.is_empty()
+	var fill: Color
+	var border: Color
+	var border_width := 1
+	var font_color := color_text
+
+	if not occupied:
+		if _is_placing_build() and selected:
+			fill = Color(0.17, 0.27, 0.15)
+			border = Color(0.34, 0.70, 0.26)
+			border_width = 2
+			font_color = Color(0.70, 0.92, 0.60)
+		else:
+			fill = Color(0.12, 0.14, 0.12)
+			border = Color(0.19, 0.22, 0.18)
+			font_color = Color(0.28, 0.32, 0.26)
+	else:
+		var tile := PlacedBuildingPresenterScript.tile(game, placement)
+		var under_construction := bool(tile.get("under_construction", false))
+		var cat := str(tile.get("category_key", ""))
+		var cat_fill := _cell_category_fill(cat)
+		var cat_border := _cell_category_border(cat)
+
+		if _is_placing_build():
+			fill = Color(0.22, 0.12, 0.11)
+			border = Color(0.62, 0.20, 0.16)
+			font_color = Color(0.74, 0.44, 0.42)
+		elif under_construction:
+			fill = Color(cat_fill.r * 0.78 + 0.08, cat_fill.g * 0.78 + 0.05, cat_fill.b * 0.78 + 0.02)
+			border = color_accent
+			border_width = 2
+			font_color = color_accent
+		else:
+			fill = cat_fill
+			border = cat_border
+			font_color = color_text
+
+		if selected and not _is_placing_build():
+			border = color_accent
+			border_width = 3
+			fill = Color(fill.r + 0.06, fill.g + 0.05, fill.b + 0.04)
+
+	button.add_theme_color_override("font_color", font_color)
+	button.add_theme_stylebox_override("normal", _flat_style(fill, border, border_width))
+	button.add_theme_stylebox_override("hover", _flat_style(
+		Color(fill.r + 0.05, fill.g + 0.05, fill.b + 0.05), border, border_width))
+	button.add_theme_stylebox_override("pressed", _flat_style(fill, border, border_width))
+	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+
+func _add_staffing_indicator(button: Button, placement: Dictionary) -> void:
+	if placement.is_empty() or _is_placing_build():
+		return
+	var tile := PlacedBuildingPresenterScript.tile(game, placement)
+	if not bool(tile.get("has_workers", false)) or bool(tile.get("under_construction", false)):
+		return
+	var workers := int(tile.get("workers", 0))
+	var capacity := int(tile.get("capacity", 0))
+	if capacity <= 0:
+		return
+
+	var dot_label := Label.new()
+	dot_label.text = _staffing_dots(workers, capacity)
+	dot_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dot_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	dot_label.add_theme_font_size_override("font_size", 10)
+	dot_label.add_theme_color_override("font_color", _staffing_dot_color(workers, capacity))
+	dot_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dot_label.anchor_left = 0.0
+	dot_label.anchor_right = 1.0
+	dot_label.anchor_top = 1.0
+	dot_label.anchor_bottom = 1.0
+	dot_label.offset_left = 1
+	dot_label.offset_right = -1
+	dot_label.offset_top = -13
+	dot_label.offset_bottom = -1
+	button.add_child(dot_label)
+
+
+func _staffing_dots(workers: int, capacity: int) -> String:
+	if capacity > 5:
+		return "%s/%s" % [workers, capacity]
+	var result := ""
+	for i in capacity:
+		result += "●" if i < workers else "○"
+	return result
+
+
+func _staffing_dot_color(workers: int, capacity: int) -> Color:
+	if workers <= 0:
+		return color_muted
+	if workers >= capacity:
+		return Color(0.52, 0.74, 0.38)
+	return color_accent
+
+
+func _flat_style(fill: Color, border: Color, border_width: int) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = fill
+	style.border_color = border
+	style.set_border_width_all(border_width)
+	style.corner_radius_top_left = 3
+	style.corner_radius_top_right = 3
+	style.corner_radius_bottom_left = 3
+	style.corner_radius_bottom_right = 3
+	return style
+
+
+func _cell_category_fill(category: String) -> Color:
+	match category:
+		"food":     return Color(0.14, 0.22, 0.13)
+		"industry": return Color(0.20, 0.18, 0.14)
+		"craft":    return Color(0.13, 0.16, 0.22)
+		"town":     return Color(0.18, 0.14, 0.22)
+		"storage":  return Color(0.22, 0.18, 0.12)
+	return Color(0.18, 0.17, 0.14)
+
+
+func _cell_category_border(category: String) -> Color:
+	match category:
+		"food":     return Color(0.28, 0.52, 0.22)
+		"industry": return Color(0.46, 0.40, 0.26)
+		"craft":    return Color(0.26, 0.42, 0.58)
+		"town":     return Color(0.42, 0.28, 0.58)
+		"storage":  return Color(0.52, 0.42, 0.20)
+	return Color(0.38, 0.34, 0.25)
 
 
 func _style_panel(panel: PanelContainer, fill: Color, border: Color, border_width: int) -> void:

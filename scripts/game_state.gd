@@ -104,6 +104,7 @@ var citizens := [
 ]
 
 var events := ["Town founded."]
+var placed_buildings := []
 
 func tick_day() -> void:
 	day += 1
@@ -194,8 +195,65 @@ func start_build(category: String, index: int) -> void:
 	events.push_front("%s construction started." % building.name)
 	changed.emit()
 
+func can_place_building(x: int, y: int) -> bool:
+	return _placement_at(x, y).is_empty()
+
+func placement_at(x: int, y: int) -> Dictionary:
+	return _placement_at(x, y)
+
+func place_building(category: String, index: int, x: int, y: int) -> bool:
+	if not can_place_building(x, y):
+		return false
+
+	if not _is_build_category(category):
+		return false
+
+	var list := _building_list(category)
+	if index < 0 or index >= list.size():
+		return false
+
+	var building: Dictionary = list[index]
+	placed_buildings.append({
+		"category": category,
+		"index": index,
+		"name": str(building.get("name", "Unknown")),
+		"x": x,
+		"y": y
+	})
+	return true
+
+func demolish_placed_building(x: int, y: int) -> bool:
+	for i in placed_buildings.size():
+		var placement: Dictionary = placed_buildings[i]
+		if int(placement.get("x", -1)) != x or int(placement.get("y", -1)) != y:
+			continue
+
+		var category := str(placement.get("category", ""))
+		var index := int(placement.get("index", -1))
+		var list := _building_list(category) if _is_build_category(category) else []
+		if index >= 0 and index < list.size():
+			var building: Dictionary = list[index]
+			if bool(building.get("building", false)):
+				building.building = false
+				building.build_progress = 0
+			if building.has("workers"):
+				_release_workers_for_building(str(building.get("name", "")))
+				building.workers = 0
+
+		placed_buildings.remove_at(i)
+		events.push_front("%s demolished." % str(placement.get("name", "Building")))
+		save_game()
+		changed.emit()
+		return true
+	return false
+
 func assign_builder(category: String, index: int) -> void:
-	var building: Dictionary = _building_list(category)[index]
+	if not _is_build_category(category):
+		return
+	var list := _building_list(category)
+	if index < 0 or index >= list.size():
+		return
+	var building: Dictionary = list[index]
 	if not building.building:
 		start_build(category, index)
 	var citizen: Variant = _first_unemployed()
@@ -203,6 +261,27 @@ func assign_builder(category: String, index: int) -> void:
 		return
 	citizen.workarea = "builder:%s" % building.name
 	changed.emit()
+
+func remove_builder(category: String, index: int) -> void:
+	if not _is_build_category(category):
+		return
+	var list := _building_list(category)
+	if index < 0 or index >= list.size():
+		return
+	var building: Dictionary = list[index]
+	for citizen in citizens:
+		if citizen.workarea == "builder:%s" % building.name:
+			citizen.workarea = "unemployed"
+			changed.emit()
+			return
+
+func builder_count_for(category: String, index: int) -> int:
+	if not _is_build_category(category):
+		return 0
+	var list := _building_list(category)
+	if index < 0 or index >= list.size():
+		return 0
+	return _builder_count(str(list[index].get("name", "")))
 
 func select_craft_product(index: int, product_index: int) -> void:
 	if index < 0 or index >= craft_buildings.size():
@@ -225,7 +304,8 @@ func save_game() -> void:
 		"town_services": town_services,
 		"storages": storages,
 		"citizens": citizens,
-		"events": events
+		"events": events,
+		"placed_buildings": placed_buildings
 	}
 	var file: FileAccess = FileAccess.open("user://savegame.json", FileAccess.WRITE)
 	file.store_string(JSON.stringify(data))
@@ -259,6 +339,8 @@ func load_game() -> void:
 		citizens = parsed.citizens
 	if parsed.has("events"):
 		events = parsed.events
+	if parsed.has("placed_buildings"):
+		placed_buildings = parsed.placed_buildings
 	changed.emit()
 
 func reset_save() -> void:
@@ -469,6 +551,11 @@ func _release_builders(building_name: String) -> void:
 		if citizen.workarea == "builder:%s" % building_name:
 			citizen.workarea = "unemployed"
 
+func _release_workers_for_building(building_name: String) -> void:
+	for citizen in citizens:
+		if citizen.workarea == building_name:
+			citizen.workarea = "unemployed"
+
 func _capacity(building: Dictionary) -> int:
 	if building.has("capacity_per_building"):
 		return building.quantity * building.capacity_per_building
@@ -484,6 +571,15 @@ func _building_list(category: String) -> Array:
 	if category == "town":
 		return town_services
 	return storages
+
+func _is_build_category(category: String) -> bool:
+	return category == "industry" or category == "food" or category == "craft" or category == "town" or category == "storage"
+
+func _placement_at(x: int, y: int) -> Dictionary:
+	for placement in placed_buildings:
+		if int(placement.get("x", -1)) == x and int(placement.get("y", -1)) == y:
+			return placement
+	return {}
 
 func _average(field: String) -> int:
 	if citizens.is_empty():
